@@ -1,6 +1,6 @@
 // Scans Claude Code transcripts and prints agent-cli improvement signals.
 // bun scan.ts [--scope project|user] [--days N] [--min-sessions N] [--min-projects N] [--json]
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util';
 const { values: opt } = parseArgs({
   strict: true,
   options: {
-    scope: { type: 'string', default: 'project' },
+    scope: { type: 'string' },
     days: { type: 'string', default: '7' },
     'min-sessions': { type: 'string', default: '3' },
     'min-projects': { type: 'string', default: '2' },
@@ -48,8 +48,11 @@ const SCOPES = {
     minProjects: int('min-projects'),
   },
 };
-const S = SCOPES[opt.scope as keyof typeof SCOPES];
-if (!S) throw new Error(`--scope expects ${Object.keys(SCOPES).join('|')}, got ${opt.scope}`);
+// In the config dir's own repo the project CLI is the user CLI, so a project scan would only narrow the user one.
+const inConfigRepo = existsSync(CONFIG) && realpathSync(ROOT) === realpathSync(CONFIG);
+const scope = opt.scope ?? (git.status === 0 && !inConfigRepo ? 'project' : 'user');
+const S = SCOPES[scope as keyof typeof SCOPES];
+if (!S) throw new Error(`--scope expects ${Object.keys(SCOPES).join('|')}, got ${scope}`);
 
 const RAW = 'AGENT_CLI_RAW=1';
 const DENY = /agent-cli-first: use `(?:\S*\/)?agent-cli ([a-z0-9-]+)/;
@@ -156,7 +159,7 @@ const cut = Date.now() - DAYS * 864e5;
 const dirs = S.dirs()
   .map((d) => join(PROJECTS, d))
   .filter((d) => existsSync(d) && statSync(d).isDirectory());
-if (!dirs.length) throw new Error(`no transcripts for scope ${opt.scope} under ${PROJECTS}`);
+if (!dirs.length) throw new Error(`no transcripts for scope ${scope} under ${PROJECTS}`);
 const sessions = new Set<string>();
 let subagents = 0,
   bashCalls = 0;
@@ -241,7 +244,7 @@ const top = (m: Map<string, Bucket>, repeated = false) =>
     .map(([key, b]) => ({ key, projects: b.projects.size, sessions: b.sessions.size, calls: b.calls, samples: [...b.samples] }));
 
 const window = {
-  scope: opt.scope,
+  scope,
   root: S.root,
   days: DAYS,
   projects: projectsSeen.size,

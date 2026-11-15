@@ -17,7 +17,7 @@ disable-model-invocation: true
 | `user`    | `~/.claude/bin/agent-cli` | `~/.claude/skills/agent-cli-first/`       | все проекты               | повторы в ≥2 проектах: git-состояние, трекеры, CI   |
 | `project` | `<repo>/bin/agent-cli`  | `<repo>/.claude/skills/agent-cli-first/`  | только текущий репозиторий | знание этого репо: его проверки, скрипты, конфиги   |
 
-`~/.claude` — это `$CLAUDE_CONFIG_DIR`, если он задан. Слой берётся из аргумента вызова (`user` / `project`); без аргумента — `project` в git-репозитории, иначе `user`. Назови выбранный слой в отчёте.
+`~/.claude` — это `$CLAUDE_CONFIG_DIR`, если он задан. Слой берётся из аргумента вызова (`user` / `project`); без аргумента — `project` в git-репозитории, иначе `user`, и `user` в репо самого `~/.claude` (там CLI проекта и есть пользовательский). `scan.ts` без `--scope` выбирает так же. Назови выбранный слой в отчёте.
 
 `SKILL_DIR` — путь из строки `Base directory for this skill:`.
 
@@ -37,7 +37,7 @@ disable-model-invocation: true
 1. CLI — один исполняемый файл без новых зависимостей. В `project` — на рантайме репо, в `user` — на `bun` или `node`. Каждая подкоманда — запись `cmds.<имя> = { summary, help, flags, run }`; у всех `--help` и `--json`, вывод — итог и ошибки, без логов.
 2. Первые подкоманды — из скана. Обычно в `user`: состояние (ветка, статус, дифф, последние коммиты), трекер и CI. Обычно в `project`: проверки (типы, линт, юнит, e2e) и справка о проекте (скрипты, цели make, хуки).
 3. Факты подкоманда читает при вызове: `user` — из git и окружения текущего каталога, `project` — из файлов репо (`package.json`, `Makefile`, `tsconfig.json`). Так CLI не устаревает. Бинари CLI зовёт так, как требует `CLAUDE.md` своего слоя.
-4. Мод — через скилл `plugin-authoring`, в папку мода из таблицы: `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.ts`. `SECTION` идёт в системный промпт и в промпт субагента. В `SECTION` и в отказах — путь к CLI своего слоя. Для `project` добавь в `.gitignore` `.claude/skills/*/.claude-plugin/types/` и `.claude/skills/*/tsconfig.json`: их пишет движок.
+4. Мод — через скилл `plugin-authoring`, в папку мода из таблицы: `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.ts`. Имя плагина в `plugin.json`: `agent-cli-first` в `project`, `agent-cli-first-user` в `user` — оба мода грузятся в одну сессию. `SECTION` идёт в системный промпт и в промпт субагента. В `SECTION` и в отказах — путь к CLI своего слоя. Для `project` добавь в `.gitignore` `.claude/skills/*/.claude-plugin/types/` и `.claude/skills/*/tsconfig.json`: их пишет движок.
 
 Дальше — шаги 1–4 как обычно.
 

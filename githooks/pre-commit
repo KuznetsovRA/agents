@@ -1,0 +1,10 @@
+#!/bin/bash
+# Enabled by `git config core.hooksPath githooks`; needs `bun install` once for node_modules/.bin/tsc.
+# Type-checks the TypeScript under skills/ when a staged path can change its result.
+# The check reads the working tree, so stage the whole change before committing.
+git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.ts$|^tsconfig\.json$|^package\.json$' || exit 0
+if [ ! -x node_modules/.bin/tsc ]; then
+  echo "pre-commit: node_modules/.bin/tsc missing; run bun install"
+  exit 1
+fi
+node_modules/.bin/tsc -p .
