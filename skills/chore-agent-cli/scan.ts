@@ -3,7 +3,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
 const { values: opt } = parseArgs({
@@ -53,7 +53,7 @@ if (!S) throw new Error(`--scope expects ${Object.keys(SCOPES).join('|')}, got $
 
 const RAW = 'AGENT_CLI_RAW=1';
 const DENY = /agent-cli-first: use `(?:\S*\/)?agent-cli ([a-z0-9-]+)/;
-const CLI_CALL = /(?:^|[\s;&|(])(?:\S*\/)?agent-cli\s+([a-z0-9-]+)/;
+const CLI_CALL = /(?:^|[\s;&|(])((?:\S*\/)?agent-cli)(?:\s+(\S+))?/;
 // Text utilities count only with a literal argument: `cat package.json` is a lookup, `grep -n` is noise.
 const UTILS = new Set('grep rg head tail wc sed awk cut sort uniq tr xargs cat ls find diff jq'.split(' '));
 const NOISE = new Set(
@@ -79,6 +79,21 @@ for (const { cli, mod } of S.layers) {
   const help = existsSync(cli) ? spawnSync(cli, ['help', '--json']) : null;
   if (help?.status === 0) for (const name of Object.keys(JSON.parse(help.stdout.toString()))) SUBCOMMANDS.add(name);
 }
+// A call to another layer's CLI (`./bin/agent-cli` in a user scan) is not this scope's use or error,
+// but no agent-cli call is a raw command either.
+const LAYER_CLIS = new Set(S.layers.map((l) => l.cli));
+// A relative path with no known cwd is not resolved: the scope root stands in for cwd and would be a guess.
+const isLayerCli = (token: string, cwd: string | undefined) => {
+  if (token.startsWith('~/')) return LAYER_CLIS.has(join(HOME, token.slice(2)));
+  if (token.startsWith('/')) return LAYER_CLIS.has(token);
+  return token.includes('/') && cwd !== undefined && LAYER_CLIS.has(resolve(cwd, token));
+};
+// No subcommand, a flag (`--help`) or a redirect (`2>&1`) prints the top help.
+const subcommandOf = (arg = '') => {
+  if (arg === 'help' || !/^[a-z]/.test(arg)) return 'help';
+  return SUBCOMMANDS.has(arg) ? arg : `unknown:${arg}`;
+};
+
 const covered = new Map<string, boolean>();
 const isCovered = async (command: string) => {
   if (!covered.has(command)) {
@@ -165,7 +180,9 @@ for (const dir of dirs) {
     sessions.add(sid);
     if (sub) subagents++;
     projectsSeen.add(dir);
-    const pending = new Map<string, { command: string; cwd: string; isCli: boolean }>();
+    const pending = new Map<string, { command: string; cwd: string; isOwn: boolean }>();
+    // Some lines carry no cwd: the last one the transcript named still holds.
+    let lastCwd: string | undefined;
     for (const line of readFileSync(path, 'utf8').split('\n')) {
       if (!line.includes('"tool_use"') && !line.includes('"tool_result"')) continue;
       let o;
@@ -174,24 +191,25 @@ for (const dir of dirs) {
       } catch {
         continue;
       }
-      const cwd: string = o.cwd ?? ROOT;
+      lastCwd = o.cwd ?? lastCwd;
+      const cwd: string = lastCwd ?? ROOT;
       for (const b of o.message?.content ?? []) {
         if (b?.type === 'tool_use' && b.name === 'Read') {
           add(reads, rel(String(b.input?.file_path ?? ''), cwd), sid, dir, '');
         } else if (b?.type === 'tool_use' && b.name === 'Bash') {
           const command: string = b.input?.command ?? '';
-          const cli = command.match(CLI_CALL);
+          const [, bin, arg] = command.match(CLI_CALL) ?? [];
+          const isOwn = bin !== undefined && isLayerCli(bin, lastCwd);
           bashCalls++;
-          pending.set(b.id, { command, cwd, isCli: !!cli });
-          if (cli)
-            add(cliUse, SUBCOMMANDS.has(cli[1]) ? cli[1] : `unknown:${cli[1]}`, sid, dir, normalize(command, cwd));
+          pending.set(b.id, { command, cwd, isOwn });
+          if (isOwn) add(cliUse, subcommandOf(arg), sid, dir, normalize(command, cwd));
           if (command.includes(RAW)) {
             const sample = normalize(command, cwd);
             const seg = segments(command, cwd).find((s) => s.includes(RAW)) ?? sample;
             add(rawBypass, familyOf(seg.replace(RAW, '').trim()) ?? seg, sid, dir, sample);
             continue;
           }
-          if (cli || (await isCovered(command))) continue;
+          if (bin || (await isCovered(command))) continue;
           for (const seg of segments(command, cwd)) {
             const fam = familyOf(seg);
             if (fam) add(raw, fam, sid, dir, seg);
@@ -204,7 +222,7 @@ for (const dir of dirs) {
             .join('');
           const sub = text.match(DENY);
           if (sub) add(denied, sub[1], sid, dir, normalize(call.command, call.cwd));
-          else if (call.isCli && /(^|\n)error: /.test(text))
+          else if (call.isOwn &&/(^|\n)error: /.test(text))
             add(cliErrors, text.match(/error: (.+)/)![1].slice(0, 100), sid, dir, normalize(call.command, call.cwd));
         }
       }
