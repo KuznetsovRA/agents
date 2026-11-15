@@ -5,7 +5,7 @@ description: Interactive local debugging loop — collect a bug description, inv
 
 # Self Local Debug
 
-A four-step interactive loop. Do NOT skip steps. Do NOT propose a fix before logs come back.
+A four-step interactive loop. Propose a fix only after the logs come back; the one exception is the one-liner case under Hard constraints.
 
 ## Step 1 — Collect bug info
 
@@ -122,12 +122,7 @@ Then produce:
 
 ## Hard constraints
 
-- Never propose the fix in the same turn you add probes. The loop has two halves separated by the user's repro.
-- Never add probes without first reporting the trace from Step 2 — the user needs to sanity-check the hypothesis before running code.
-- Never re-instrument the dev build after it came back clean on a bug that's real on prod. Switch to Step 3b instead.
 - Never log secrets, tokens, auth headers, or full user PII. If a payload may contain them, log the shape (`Object.keys(...)`) or a redacted subset.
-- Never edit code outside the probe inserts. No refactors. No formatting fixes. No comment cleanup.
-- Never gate probes behind a flag — they are temporary and must be removed in Step 4.
 - Console snippets go to `.tmp-shots/` inside the work tree, never `/tmp` — and they are your garbage: list them and offer removal at the end.
 - If the bug is clearly a one-liner (typo, wrong variable name visible in a 10-line function), skip Step 3 entirely — say so and jump to Step 4 with the fix. The loop is for non-obvious bugs.
 - Honor the user's git rules: do NOT `git add` or `git commit` the probe inserts.
