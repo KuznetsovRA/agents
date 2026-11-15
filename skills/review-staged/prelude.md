@@ -19,7 +19,7 @@
 ## Evidence
 
 - `quote` — 2–10 lines copied verbatim out of the file (not the diff, not retyped). The gate greps its longest line back and anchors the thread there.
-- `entry` — mandatory for P0/P1: `<entry file:line> → … → <file:line>; guard above: none | <file:line>` from a real entry point (route, handler, consumer, CLI). A guard on the way that makes the line unreachable refutes the claim. No traceable entry → P2 at most.
+- `entry` — mandatory for P0/P1: `<entry file:line> → … → <file:line>; guard above: none | <file:line>` from a real entry point (route, handler, consumer, CLI). A guard on the way that makes the line unreachable refutes the claim. No traceable entry → P2 at most. A claim about a value's shape (nullable, empty, type, size) → the chain ends at the value's source, quoted: backend code, swagger, config. No source found → `dropped.unproven`.
 - `locations` — every instance of the defect, `file:line` each.
 - `repro` — command or click path, where one applies.
 - `pre_existing` — revert test: would the defect still be here with the diff's lines removed? true → it becomes a ticket, not a finding. P0/P1 only, ≤3.
