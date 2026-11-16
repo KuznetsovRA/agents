@@ -104,11 +104,43 @@ def check(c, files, rs_dir, a):
     return None, note
 
 
+PROOF_MIN_LEN = 20
+
+
+# the reviewer writes paths absolute and may append a note after one: compare resolved paths
+def norm(f):
+    return os.path.realpath(os.path.expanduser(f.split(" (")[0].strip()))
+
+
+def rules_unproven(rs, entries):
+    """Rule files and rules.md sections with no proof of reading. A path alone is a claim the reader
+    could write without reading; a verbatim line from the text's second half is grepped back."""
+    proofs = [(norm(e.get("file") or ""), (e.get("file") or "").strip(), e["line"].strip()) for e in entries
+              if isinstance(e, dict) and len((e.get("line") or "").strip()) >= PROOF_MIN_LEN]
+    targets = []
+    for p in (f.strip() for f in (read(f"{rs}/rule-files.txt") or "").splitlines()):
+        if p:
+            np = norm(p)
+            targets.append((p, read(os.path.expanduser(p)) or "", [ln for n, _, ln in proofs if n == np]))
+    # rules.md bundles several rule files: a skipped section leaves no trace unless each is checked by name
+    parts = re.split(r"^===== RULE FILE: (.+?) — matched .*=====$", read(f"{rs}/rules.md") or "", flags=re.M)
+    targets += [(f"rules.md: {s}", body, [ln for _, f, ln in proofs if f.endswith(s)])
+                for s, body in zip(parts[1::2], parts[2::2])]
+
+    def tail(text):
+        lines = text.splitlines()
+        return lines[len(lines) // 2:]
+
+    return [label for label, text, claims in targets if not any(c in ln for c in claims for ln in tail(text))]
+
+
 def merge(kept):
-    """One defect reported by two axes → one candidate: (file, line ±5)."""
+    """One defect reported by two axes → one candidate: same file, same anchored line (check() moved
+    `line` to the quote's longest line). Different claims a few lines apart stay apart: merged, they
+    take the higher severity and get settled by different threads."""
     out = []
     for c in kept:
-        twin = next((o for o in out if o["file"] == c["file"] and abs(o["line"] - c["line"]) <= 5), None)
+        twin = next((o for o in out if o["file"] == c["file"] and o["line"] == c["line"]), None)
         if not twin:
             out.append(c)
             continue
@@ -191,17 +223,7 @@ def main():
     for n, d in enumerate(notes, 1):
         d["id"] = f"D{n}"
 
-    expected = [f.strip() for f in (read(f"{rs}/rule-files.txt") or "").splitlines() if f.strip()]
-    # the reviewer writes paths absolute and may append a note after one: compare resolved paths
-    def norm(f):
-        return os.path.realpath(os.path.expanduser(f.split(" (")[0].strip()))
-    read_b = {norm(f) for f in rules_read.get("B") or []}
-    rules_missing = [f for f in expected if norm(f) not in read_b] if "B" in rules_read else []
-    # rules.md bundles several rule files: a skipped section leaves no trace unless each is checked by name
-    sections = re.findall(r"^===== RULE FILE: (.+?) — matched ", read(f"{rs}/rules.md") or "", re.M)
-    listed_b = [f.split(" (")[0].strip() for f in rules_read.get("B") or []]
-    if "B" in rules_read:
-        rules_missing += [f"rules.md: {s}" for s in sections if not any(e.endswith(s) for e in listed_b)]
+    rules_missing = rules_unproven(rs, rules_read["B"]) if "B" in rules_read else []
     # an axis that read only the last commits looks complete; its own file list shows the gap
     files_missing = {}
     if a.require_coverage:

@@ -42,7 +42,7 @@ Write your result with `Write` to `RS_DIR/axis-X.json`, then answer with one lin
     "evidence": {"quote": "…", "entry": "…", "locations": ["a.ts:40", "a.ts:58"], "repro": "…"}
   }],
   "design_notes": [{"question": "…", "locations": ["a.ts:12"]}],
-  "rules_read": ["B only: every path you read from rule-files.txt and rules.md, copied verbatim, one per entry"],
+  "rules_read": [{"file": "B only: a path from rule-files.txt or a `RULE FILE` section name of rules.md, verbatim", "line": "a line of 20+ chars copied verbatim from the second half of that file or section"}],
   "files_read": ["every path from RS_DIR/files.txt whose hunks you judged on your axis, copied verbatim"],
   "dropped": {"refuted": 0, "unproven": 0}
 }
