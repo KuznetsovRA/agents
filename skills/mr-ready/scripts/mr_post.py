@@ -3,8 +3,8 @@
 
 glab quirks this hides: a JSON body needs `-H 'Content-Type: application/json' --input -`
 (form data → 415 on PUT, silently dropped `position` on POST); a POST that created no note
-still exits 0 with an `id` on stdout — so nothing here trusts an exit code, every subcommand
-re-fetches and checks.
+still exits 0 with an `id` on stdout, and a POST that answered 500 may have created the note — so
+nothing here trusts an exit code, every subcommand re-fetches and checks.
 
     mr_post.py thread --url MR --file a.ts --line 12 --body-file b.md   # thread with a hand-written body (line outside the diff → unpositioned)
     mr_post.py reply  --url MR --discussion <id>       --body-file b.md   # reply into a thread (--reopen: unresolve first)
@@ -58,8 +58,22 @@ def matches_head(head, path):
                for args in (("diff", "--quiet", "--cached"), ("diff", "--quiet")))
 
 
+def failed_post(host, proj, iid, body, error, disc_id=None):
+    """A POST that failed (GitLab 500) may still have created the note: find it, so a retry does not post
+    a duplicate. → what the POST would have returned (the discussion; the note for a reply), else exit."""
+    discs = [discussion(host, proj, iid, disc_id)] if disc_id else discussions(host, proj, iid)
+    for d in discs:
+        for n in d.get("notes", []):
+            if not n.get("system") and n["body"].strip() == body.strip():
+                print(f"POST answered {error!r}, but the note exists: {n['id']}", file=sys.stderr)
+                return n if disc_id else d
+    sys.exit(f"POST: {error} (no note with this body in the MR)")
+
+
 def unpositioned(host, proj, iid, body):
-    created = api(host, "POST", f"{mr_endpoint(proj, iid)}/discussions", {"body": body})
+    created = api(host, "POST", f"{mr_endpoint(proj, iid)}/discussions", {"body": body}, soft=True)
+    if "error" in created:
+        created = failed_post(host, proj, iid, body, created["error"])
     disc_id = created.get("id")
     back = discussion(host, proj, iid, disc_id) if disc_id else {}
     if not back.get("notes"):
@@ -95,7 +109,7 @@ def cmd_thread(a, host, proj, iid, refs=None):
         text = a.body if where in a.body else f"{title}\n\n{where}\n{rest}"
         return unpositioned(host, proj, iid, text)
     if "error" in created:
-        sys.exit(f"thread POST: {created['error']}")
+        created = failed_post(host, proj, iid, a.body, created["error"])
     disc_id = created.get("id")
     back = discussion(host, proj, iid, disc_id) if disc_id else {}
     if not back.get("notes"):
@@ -108,7 +122,9 @@ def cmd_thread(a, host, proj, iid, refs=None):
 
 
 def reply(host, proj, iid, disc_id, body):
-    created = api(host, "POST", f"{mr_endpoint(proj, iid)}/discussions/{disc_id}/notes", {"body": body})
+    created = api(host, "POST", f"{mr_endpoint(proj, iid)}/discussions/{disc_id}/notes", {"body": body}, soft=True)
+    if "error" in created:
+        created = failed_post(host, proj, iid, body, created["error"], disc_id)
     ids = {n["id"] for n in discussion(host, proj, iid, disc_id).get("notes", [])}
     if created.get("id") not in ids:
         sys.exit(f"reply POST returned id {created.get('id')} but the thread does not contain it")
