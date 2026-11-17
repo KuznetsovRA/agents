@@ -35,6 +35,17 @@ def discussion(host, proj, iid, disc_id):
     return api(host, "GET", f"{mr_endpoint(proj, iid)}/discussions/{disc_id}")
 
 
+def full_discussion_id(host, proj, iid, disc_id):
+    """Indexes and reports cite a thread by its first 8 chars, GitLab answers 404 to anything but all 40.
+    → the full id of the one thread starting with disc_id, else exit."""
+    if len(disc_id) == 40:
+        return disc_id
+    found = [d["id"] for d in discussions(host, proj, iid) if d["id"].startswith(disc_id)]
+    if len(found) != 1:
+        sys.exit(f"discussion {disc_id!r}: {len(found)} threads start with it, need exactly one")
+    return found[0]
+
+
 def old_line_of(base, head, path, line):
     """GitLab takes a line the diff didn't add only with its old_line too — without it: 400 line_code.
     → old_line; None for an added line or when the local repo lacks the refs."""
@@ -132,6 +143,7 @@ def reply(host, proj, iid, disc_id, body):
 
 
 def cmd_reply(a, host, proj, iid):
+    a.discussion = full_discussion_id(host, proj, iid, a.discussion)
     if a.reopen:
         api(host, "PUT", f"{mr_endpoint(proj, iid)}/discussions/{a.discussion}?resolved=false")
         back = discussion(host, proj, iid, a.discussion)
@@ -221,7 +233,7 @@ def main():
     p.add_argument("--body-file", help="markdown body; a file, so quoting never bites")
     p.add_argument("--file", help="thread: new_path")
     p.add_argument("--line", type=int, help="thread: new_line")
-    p.add_argument("--discussion", help="reply: discussion id")
+    p.add_argument("--discussion", help="reply: discussion id, full or a unique prefix")
     p.add_argument("--reopen", action="store_true", help="reply: unresolve the thread first")
     p.add_argument("--mr-dir", help="publish: MR_DIR with state.json")
     p.add_argument("--dry-run", action="store_true", help="publish: list what would be posted, post nothing")

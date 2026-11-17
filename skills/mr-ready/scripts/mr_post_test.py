@@ -28,4 +28,16 @@ try:
     sys.exit("FAIL: 500 без заметки должен падать")
 except SystemExit as e:
     assert "no note with this body" in str(e), e
+
+# Короткий id из индекса read_threads.py: GitLab на него отвечает 404 (MR !32512, 2026-11-17)
+FULL = "e5fe994d01294098f61e7401bf2ebf9e6cf5116a"
+mr_post.discussions = lambda host, proj, iid: [{"id": FULL}, {"id": "e5fe1111" + "0" * 32}]
+assert mr_post.full_discussion_id("h", "p", 1, "e5fe994d") == FULL, "уникальный префикс раскрывается"
+assert mr_post.full_discussion_id("h", "p", 1, FULL) == FULL, "полный id — как есть"
+for prefix in ("e5fe", "ffff"):
+    try:
+        mr_post.full_discussion_id("h", "p", 1, prefix)
+        sys.exit(f"FAIL: префикс {prefix!r} не уникален или не найден — должен падать")
+    except SystemExit as e:
+        assert "need exactly one" in str(e), e
 print("ok")
