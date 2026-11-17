@@ -212,6 +212,9 @@ def main():
     a = p.parse_args()
     if a.cmd == "publish" and not a.mr_dir:
         p.error("publish needs --mr-dir")
+    # only publish has a dry run; thread, reply and describe always write
+    if a.dry_run and a.cmd != "publish":
+        p.error(f"--dry-run works only with publish; {a.cmd} would post for real")
     if a.cmd != "publish":
         if not a.body_file:
             p.error(f"{a.cmd} needs --body-file")
