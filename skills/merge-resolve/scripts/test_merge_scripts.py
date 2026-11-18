@@ -59,6 +59,8 @@ with tempfile.TemporaryDirectory() as repo:
     write('both.ts', lines())
     write('clash.ts', 'export const x = 1;\n')
     write('entity.ts', ENTITY_V1)
+    write('slice/ui/types.ts', 'export type Price = number;\nexport const other = 1;\n')
+    write('slice/index.ts', "export type { Price } from './ui/types';\n")
     commit('base')
 
     git('checkout', '-q', '-b', 'build')
@@ -69,6 +71,7 @@ with tempfile.TemporaryDirectory() as repo:
     write('clash.ts', 'export const x = 4;\n')
     write('entity.ts', ENTITY_V2)
     write('consumer.ts', "import { Mode } from './entity';\n")
+    write('price-consumer.ts', "import { type Price } from './slice';\n")
     commit('build snapshot')
 
     git('checkout', '-q', 'main')
@@ -80,6 +83,10 @@ with tempfile.TemporaryDirectory() as repo:
     write('both.ts', lines(line1='line1 shared', line7='line7 theirs'))
     write('clash.ts', 'export const x = 3;\n')
     write('entity.ts', ENTITY_V3)
+    # Price переезжает внутри слайса: индекс реэкспортирует его из нового файла.
+    write('slice/ui/types.ts', 'export const other = 1;\n')
+    write('slice/model/price.ts', 'export type Price = number;\n')
+    write('slice/index.ts', "export type { Price } from './model/price';\n")
     commit('master moves on')
 
     git('checkout', '-q', 'build')
@@ -96,6 +103,48 @@ with tempfile.TemporaryDirectory() as repo:
            'черновик both.ts')
     expect('Mode — убран из entity.ts [take-theirs]' in out and 'consumer.ts' in out,
            f'удалённый экспорт Mode с потребителем consumer.ts\n{out}')
+    expect('Price' not in out, f'Price по-прежнему реэкспортирует slice/index.ts\n{out}')
+
+    git('merge', '--abort')
+
+# Откат: master откатывает фичу, а сборка поверх фичи правила тот же файл.
+# Версия theirs (до фичи) есть в истории ours, но take-ours здесь оставил бы
+# фичу в файле, а take-theirs выкинул бы правку сборки.
+FEAT_TAIL = 'export const feat = () => {};\n'
+with tempfile.TemporaryDirectory() as repo:
+    os.chdir(repo)
+    git('init', '-q', '-b', 'main')
+    write('f.ts', lines())
+    commit('base')
+    write('f.ts', lines(line1='feat') + FEAT_TAIL)
+    commit('feature')
+
+    git('checkout', '-q', '-b', 'build')
+    write('f.ts', lines(line1='feat build') + FEAT_TAIL)
+    commit('build edits the feature')
+
+    git('checkout', '-q', 'main')
+    git('revert', '--no-edit', 'HEAD')
+    revert_sha = git('rev-parse', 'HEAD').strip()
+
+    git('checkout', '-q', 'build')
+    git('merge', '-q', 'main', check=False)
+
+    out = run('classify_conflicts.py', '--out', os.path.join(repo, '.out'))
+    lists = {name: Path(repo, '.out', f'{name}.txt').read_text().split()
+             for name in ('take-ours', 'manual')}
+    expect(lists['take-ours'] == [] and lists['manual'] == ['f.ts'], f'откат — manual\n{out}')
+    expect(f'theirs {revert_sha[:8]} «Revert "feature"» — файлов: 1, в конфликте: 1' in out,
+           f'блок ОТКАТЫ\n{out}')
+    expect(f'черновик принимает откат (база {revert_sha[:8]}^)' in out, f'причина manual\n{out}')
+    draft_path = Path(repo, '.out/drafts/f.ts')
+    draft = draft_path.read_text() if draft_path.exists() else ''
+    expect('feat = ' not in draft and '||||||| ' in draft,
+           f'черновик от версии до отката: хвост фичи снят, line1 в конфликте\n{draft}')
+
+    out = run('check_merge_symbols.py')
+    expect(f'ПРОПАЛ   feat — есть в ours, в результате нет; менял коммит theirs {revert_sha[:8]}'
+           in out, f'пропажа feat с коммитом отката\n{out}')
 
     git('merge', '--abort')
 

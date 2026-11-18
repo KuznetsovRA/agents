@@ -8,7 +8,9 @@
   историй, проходит без конфликтов; готовый черновик лежит в OUT/drafts/<path>;
 - manual: обе стороны правили одно место, нет общей версии (ренейм на одной
   стороне), delete/modify или бинарный файл. Черновик diff3 от реальной базы,
-  если она есть, лежит там же.
+  если она есть, лежит там же. Файл, который трогал откат (`git revert`) в
+  собственном диапазоне стороны, — всегда manual: черновик строится от версии
+  до отката и принимает его, а блок ОТКАТЫ называет развилку.
 
 Виртуальная база `ort` при нескольких merge-base делает конфликтом весь файл,
 даже если одна сторона просто старее другой. Реальная база это снимает.
@@ -35,8 +37,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from merge_history import (  # noqa: E402
-    CODE_EXT, BlobReader, fast_forward_side, git, git_bytes, history_blobs, stage_blob,
-    theirs_ref,
+    CODE_EXT, BlobReader, fast_forward_side, find_reverts, git, git_bytes, history_blobs,
+    stage_blob, theirs_ref,
 )
 
 NAME = r'[A-Za-z_$][\w$]*'
@@ -105,14 +107,31 @@ def merge_file(base, ours, theirs):
         return r.returncode, r.stdout
 
 
-def classify(path, ref):
+def classify(path, ref, reverts):
     """Класс файла, причина и текст результата для поиска удалённых экспортов."""
+    revert = reverts.get(path)
     b2, b3 = stage_blob(2, path), stage_blob(3, path)
     if not b2 or not b3:
-        return 'manual', 'delete/modify или файл добавлен одной стороной', None, None
+        reason = 'delete/modify или файл добавлен одной стороной'
+        if revert:
+            reason += f'; {revert_note(revert)}'
+        return 'manual', reason, None, None
 
     ours = git_bytes('cat-file', 'blob', b2)
     theirs = git_bytes('cat-file', 'blob', b3)
+
+    # Откат — развилка для пользователя, а не механика: даже чистый черновик
+    # молча выбирает «принять откат». Черновик от версии до отката переносит
+    # ровно хунки отката поверх правок другой стороны.
+    if revert:
+        before = git_bytes('cat-file', 'blob', f'{revert.sha}^:{path}')
+        note, draft = revert_note(revert), None
+        if before is not None and not is_binary(ours, theirs):
+            conflicts, draft = merge_file(before, ours, theirs)
+            note += (f': черновик принимает откат (база {revert.sha[:8]}^), '
+                     f'{conflicts} конфликт(ов)')
+        return 'manual', note, None, draft
+
     side = fast_forward_side('HEAD', ref, path, b2, b3)
     if side == 'theirs':
         return 'take-theirs', '', theirs, None
@@ -139,6 +158,10 @@ def classify(path, ref):
     if conflicts == 0:
         return 'realbase-clean', '', draft, draft
     return 'manual', f'{conflicts} конфликт(ов) от реальной базы {real_base[:8]}', None, draft
+
+
+def revert_note(revert):
+    return f'откат на стороне {revert.side} {revert.sha[:8]} «{revert.subject}»'
 
 
 def write_draft(out, path, data):
@@ -174,28 +197,46 @@ TS_IMPORT = re.compile(r'(?:import|export)\s+(?:type\s+)?\{([^}]*)\}\s*from\s*[\
 PHP_USE = re.compile(r'^[ \t]*use\s+([\w\\]+?)(?:\s+as\s+\w+)?;', re.M)
 
 
-def imports_from(name, hit, source, text):
-    """hit импортирует name из модуля, путь которого указывает на source.
+def import_targets(name, hit, source, text):
+    """Модули, через которые hit импортирует name из source.
 
-    TS: относительный путь резолвим от каталога hit; алиас (`@entities/X`) и
-    голый путь (`lib/utils/x`) ищем как сегменты пути source. PHP: `use ...\\Name;`.
+    Возвращает список: None — путь указывает прямо на source; строка — каталог
+    выше source (корень слайса), его `index` может реэкспортировать name из
+    другого файла. TS: относительный путь резолвим от каталога hit; алиас
+    (`@entities/X`) и голый путь (`lib/utils/x`) ищем как сегменты пути source.
+    PHP: `use ...\\Name;`.
     """
     if source.endswith('.php'):
-        return any(u.split('\\')[-1] == name for u in PHP_USE.findall(text))
+        return [None] if any(u.split('\\')[-1] == name for u in PHP_USE.findall(text)) else []
     src = os.path.splitext(source)[0]
     if src.endswith('/index'):
         src = src[:-len('/index')]
+    targets = []
     for names, spec in TS_IMPORT.findall(text):
         if not re.search(r'(?<![\w$])' + re.escape(name) + r'(?![\w$])', names):
             continue
         if spec.startswith('.'):
             target = os.path.normpath(os.path.join(os.path.dirname(hit), spec))
-            if src == target or src.startswith(target + '/'):
-                return True
-        elif '/' + spec.lstrip('@').rstrip('/') + '/' in '/' + src + '/' \
-                or src.endswith('/' + spec.lstrip('@')):
-            return True
-    return False
+            if src == target:
+                targets.append(None)
+            elif src.startswith(target + '/'):
+                targets.append(target)
+            continue
+        spec = spec.lstrip('@').rstrip('/')
+        if src.endswith('/' + spec):
+            targets.append(None)
+            continue
+        at = ('/' + src + '/').find('/' + spec + '/')
+        if at >= 0:
+            targets.append(src[:at + len(spec)])
+    return targets
+
+
+def reexports(module_dir, name, exports_of):
+    """index модуля или файл с этим путём экспортирует name — потребитель не сломан."""
+    return any(name in exports_of(path)
+               for ext in ('.ts', '.tsx', '.js', '.jsx', '.mjs')
+               for path in (f'{module_dir}/index{ext}', f'{module_dir}{ext}'))
 
 
 def find_users(removed, resolved):
@@ -211,7 +252,11 @@ def find_users(removed, resolved):
         try:
             return Path(path).read_text(encoding='utf-8', errors='replace')
         except OSError:
-            return ''
+            return None
+
+    @functools.lru_cache(maxsize=None)
+    def exports_of(path):
+        return exported_names(path, text_of(path))
 
     if not removed:
         return {}
@@ -228,7 +273,9 @@ def find_users(removed, resolved):
     for name, sources in removed.items():
         own = {p for p, _ in sources}
         hits = [f for f in grep_hits.get(name, ()) if f not in own
-                and any(imports_from(name, f, src, text_of(f)) for src in own)]
+                and any(target is None or not reexports(target, name, exports_of)
+                        for src in own
+                        for target in import_targets(name, f, src, text_of(f) or ''))]
         if hits:
             users[name] = hits
     return users
@@ -256,10 +303,16 @@ def main():
     groups = {'take-theirs': [], 'take-ours': [], 'realbase-clean': [], 'manual': []}
     reasons = {}
     results = []
+    revert_list = find_reverts(ref)
+    # Путь, который трогали несколько откатов, получает самый новый.
+    reverts = {}
+    for revert in revert_list:
+        for path in revert.paths:
+            reverts.setdefault(path, revert)
     # История файла в большом репо — до секунды на сторону; git-процессы
     # независимы, поэтому файлы идут параллельно.
     with ThreadPoolExecutor(max_workers=8) as pool:
-        classified = list(pool.map(lambda p: classify(p, ref), files))
+        classified = list(pool.map(lambda p: classify(p, ref, reverts), files))
 
     for path, (cls, reason, result, draft) in zip(files, classified):
         groups[cls].append(path)
@@ -277,6 +330,15 @@ def main():
     print(f'КЛАССИФИКАЦИЯ ({len(files)} файлов). Списки и черновики: {out}')
     for cls, paths in groups.items():
         print(f'  {cls:<14} {len(paths):4}  {out}/{cls}.txt')
+
+    conflicted = set(files)
+    shown = [r for r in revert_list if conflicted.intersection(r.paths)]
+    if shown:
+        print('\nОТКАТЫ (развилка до плана: принять откат или сохранить откатанное — '
+              'revert of revert):')
+        for r in shown:
+            print(f'  {r.side} {r.sha[:8]} «{r.subject}» — файлов: {len(r.paths)}, '
+                  f'в конфликте: {len(conflicted.intersection(r.paths))}')
 
     if groups['manual']:
         print('\nРУЧНЫЕ (черновик diff3 от реальной базы — в drafts/, если база есть):')

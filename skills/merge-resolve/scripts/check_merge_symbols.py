@@ -142,6 +142,24 @@ def is_fast_forward(path, refs):
     return side is not None and result == (ours_blob if side == 'ours' else theirs_blob)
 
 
+def removed_by(path, name, where, refs):
+    """Коммит другой стороны, который менял число вхождений name в файле: 'side sha «тема»'.
+
+    Пропажу символа, который был только на одной стороне, могла внести
+    другая сторона своим коммитом — тогда это её правка, а не потеря при мерже.
+    """
+    if len(where) != 1:
+        return None
+    ours_ref, theirs_ref_name = refs
+    other, rng = (('theirs', f'{ours_ref}..{theirs_ref_name}') if 'ours' in where
+                  else ('ours', f'{theirs_ref_name}..{ours_ref}'))
+    first = git('log', '-1', '--format=%H%x09%s', f'-S{name}', rng, '--', path).strip()
+    if not first:
+        return None
+    sha, _, subject = first.partition('\t')
+    return f'{other} {sha[:8]} «{subject}»'
+
+
 def main():
     raw, sides, refs = scope()
     files = [f for f in dict.fromkeys(raw) if f.endswith(CODE_EXT)]
@@ -191,6 +209,10 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as pool:
         forwards = list(pool.map(lambda item: bool(item[2]) and is_fast_forward(item[0], refs),
                                  findings))
+        losses = [(f, n, where) for (f, _, lost), is_forward in zip(findings, forwards)
+                  if not is_forward for n, where in lost.items()]
+        origins = {(f, n): origin for (f, n, _), origin
+                   in zip(losses, pool.map(lambda loss: removed_by(*loss, refs), losses))}
 
     clean = True
     for (f, dups, lost), is_forward in zip(findings, forwards):
@@ -205,7 +227,9 @@ def main():
             print(f'  ДУБЛЬ    {n} — {c} определения вне маркеров; '
                   f'второе затирает первое')
         for n, where in sorted(lost.items()):
-            print(f'  ПРОПАЛ   {n} — есть в {"+".join(sorted(where))}, в результате нет')
+            origin = origins.get((f, n))
+            tail = f'; менял коммит {origin}' if origin else ''
+            print(f'  ПРОПАЛ   {n} — есть в {"+".join(sorted(where))}, в результате нет{tail}')
 
     print()
     if clean:
@@ -214,6 +238,8 @@ def main():
         print('Проверь каждую строку выше ПО ФАКТУ: дубль может быть перегрузкой,')
         print('пропажа — намеренным удалением или ренеймом. По .ts/.tsx уточняй')
         print('через LSP documentSymbol/findReferences, не по регексу.')
+        print('«менял коммит» — последний коммит другой стороны с `git log -S<имя>` по файлу:')
+        print('прочитай его `git show`, чтобы отличить удаление от правки вызова.')
 
 
 if __name__ == '__main__':
