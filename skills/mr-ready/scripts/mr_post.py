@@ -62,6 +62,13 @@ def old_line_of(base, head, path, line):
     return line - delta
 
 
+def is_checkout_of(proj):
+    """git runs in the cwd: from another repo every diff against the MR head fails like a real mismatch.
+    → True when a remote of the cwd repo points at proj."""
+    r = state.git("remote", "-v", check=False)
+    return not r.returncode and re.search(rf"(?:@[^:\s]+:|://[^/\s]+/){re.escape(proj)}(?:\.git)?\s", r.stdout) is not None
+
+
 def matches_head(head, path):
     """A review reads the index or the working tree: its line numbers point at the same code in the MR
     only when one of these copies equals the MR head."""
@@ -253,6 +260,8 @@ def main():
     if a.cmd == "reply" and not a.discussion:
         p.error("reply needs --discussion")
     host, proj, iid = parse_url(a.url)
+    if (a.cmd == "thread" or a.cmd == "publish" and not a.dry_run) and not is_checkout_of(proj):
+        sys.exit(f"{os.getcwd()} is not a checkout of {proj}: run mr_post.py from the MR's repo")
     fn = {"thread": cmd_thread, "reply": cmd_reply, "describe": cmd_describe, "publish": cmd_publish}[a.cmd]
     print(json.dumps(fn(a, host, proj, iid), ensure_ascii=False))
 

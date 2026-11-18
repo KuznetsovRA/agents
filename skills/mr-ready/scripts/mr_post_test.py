@@ -2,7 +2,10 @@
 """Самопроверка mr_post.py: GitLab ответил на POST 500, но заметку создал (MR !32772, 2026-11-17).
 Запуск: python3 mr_post_test.py"""
 
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -40,4 +43,20 @@ for prefix in ("e5fe", "ffff"):
         sys.exit(f"FAIL: префикс {prefix!r} не уникален или не найден — должен падать")
     except SystemExit as e:
         assert "need exactly one" in str(e), e
+
+# Запуск из другого репо: каждый diff с головой MR падал как настоящее расхождение (MR !32704, 2026-11-18)
+here = os.getcwd()
+with tempfile.TemporaryDirectory() as tmp:
+    os.chdir(tmp)
+    try:
+        assert not mr_post.is_checkout_of("core/core_backend"), "не git-репо — не чекаут"
+        subprocess.run(["git", "init", "-q"], check=True)
+        subprocess.run(["git", "remote", "add", "origin", "git@git.amocrm.ru:core/core_backend.git"], check=True)
+        assert mr_post.is_checkout_of("core/core_backend"), "ssh-remote проекта MR"
+        assert not mr_post.is_checkout_of("core/core_back"), "префикс пути — другой проект"
+        assert not mr_post.is_checkout_of("core_backend"), "без группы — другой проект"
+        subprocess.run(["git", "remote", "set-url", "origin", "https://git.amocrm.ru/core/core_backend"], check=True)
+        assert mr_post.is_checkout_of("core/core_backend"), "https-remote без .git"
+    finally:
+        os.chdir(here)
 print("ok")
